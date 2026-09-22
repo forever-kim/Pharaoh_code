@@ -1,0 +1,153 @@
+import json, subprocess, re, os
+P1=json.load(open('/tmp/p1.json')); P2=json.load(open('/tmp/p2.json'))
+P3=json.load(open('/tmp/p3.json')); P4=json.load(open('/tmp/p4.json'))
+src = open('/data/2757748__pharaoh-dice-simulator-v2.html', encoding='utf-8').read()
+L = src.split('\n')
+
+checks=[(42,'.layout{'),(92,'.step{'),(104,'.slot{'),(117,'.out{'),(124,'.final{'),
+ (135,'.chip.win'),(159,'@media (max-height:520px)'),(162,'}'),
+ (209,'    <section class="panel" id="workBlock">'),(264,'    </section>'),
+ (572,'var S={'),(579,'};'),(581,'function activeStep()'),(619,'function renderExpr(pop){'),
+ (694,'}'),(707,'function canUseSlot(token,slot){'),(719,'}'),(764,'function useToken(token){'),
+ (778,'}'),(780,'/* ---------- 계산 ----------'),(857,'}'),(883,'function showHint(){'),(893,'}'),
+ (895,'/* ---------- 주사위 굴리기 ----------'),(959,'}'),(1031,'/* 버튼 */'),(1122,'})();')]
+for i,s in checks:
+    assert L[i].startswith(s) or L[i].strip().startswith(s), (i, L[i][:70], s)
+print('anchors ok')
+
+reps=[(1031,1122,P4['tail']),(895,959,P3['roll']),(883,893,P3['hint']),(780,857,P3['calc']),
+ (764,778,P2['usetoken']),(707,719,P2['canuse']),(619,694,P2['render']),(581,581,P2['active']),
+ (572,579,P2['state']),(209,264,P1['html_work']),(159,162,P1['css_mq']),(124,135,P1['css_rec']),
+ (117,117,P1['css_out']),(104,104,P1['css_slot']),(92,92,P1['css_step']),(42,42,P1['css_layout'])]
+for a,b,t in reps: L[a:b+1]=t.split('\n')
+out='\n'.join(L)
+out=out.replace("계산이 끝난 식이에요. [식 초기화]를 누르면 다시 만들 수 있어요.",
+                "계산이 끝난 칸이에요. [식 지우기]를 누르면 처음부터 다시 만들 수 있어요.")
+for bad in ['S.use','btnNext','id="seg"','data-use','class="chip"','만든 답 모음','setUse','#seg']:
+    assert out.count(bad)==0 or bad=='S.use', (bad, out.count(bad))
+print('residual S.use:', out.count('S.use'), '| typeof check only:', 'typeof S.use' in out)
+os.makedirs('/home/user',exist_ok=True)
+open('/home/user/pharaoh-dice-simulator-v2.html','w',encoding='utf-8').write(out)
+print('size', len(out))
+
+# ---- extract JS and test in node ----
+js = re.search(r'<script>\n(.*)\n</script>', out, re.S).group(1)
+harness = r'''
+function El(tag){
+  this.tagName=(tag||'div').toUpperCase();
+  this.children=[]; this.parentNode=null; this.dataset={}; this.style={};
+  this._cls=[]; this._text=''; this._html=''; this.attrs={};
+  this.disabled=false; this.offsetWidth=10;
+  var self=this;
+  this.classList={
+    add:function(){for(var i=0;i<arguments.length;i++){if(self._cls.indexOf(arguments[i])<0)self._cls.push(arguments[i]);}},
+    remove:function(){for(var i=0;i<arguments.length;i++){var k=self._cls.indexOf(arguments[i]);if(k>=0)self._cls.splice(k,1);}},
+    contains:function(c){return self._cls.indexOf(c)>=0;},
+    toggle:function(c,on){ if(on)this.add(c); else this.remove(c); }
+  };
+}
+Object.defineProperty(El.prototype,'className',{get:function(){return this._cls.join(' ');},set:function(v){this._cls=String(v).split(/\s+/).filter(Boolean);}});
+Object.defineProperty(El.prototype,'textContent',{
+  get:function(){ if(this._html) return stripTags(this._html);
+                  if(this.children.length) return this.children.map(function(c){return c.textContent;}).join('');
+                  return this._text; },
+  set:function(v){ this._text=String(v); this._html=''; this.children=[]; }});
+Object.defineProperty(El.prototype,'innerHTML',{get:function(){return this._html;},
+  set:function(v){ this._html=String(v); this._text=''; this.children=[]; parseInto(this,String(v)); }});
+Object.defineProperty(El.prototype,'parentElement',{get:function(){return this.parentNode;}});
+function stripTags(h){ return String(h).replace(/<[^>]*>/g,''); }
+function parseInto(parent,h){
+  var re=/<(\w+)([^>]*)>([\s\S]*?)<\/\1>/g, mm;
+  while((mm=re.exec(h))){
+    var e=new El(mm[1]);
+    var am=/class="([^"]*)"/.exec(mm[2]); if(am) e.className=am[1];
+    var dm=/data-del="([^"]*)"/.exec(mm[2]); if(dm) e.dataset.del=dm[1];
+    e._html=mm[3]; e._text=stripTags(mm[3]);
+    e.parentNode=parent; parent.children.push(e);
+  }
+}
+El.prototype.appendChild=function(c){ c.parentNode=this; this.children.push(c); return c; };
+El.prototype.remove=function(){ if(this.parentNode){var i=this.parentNode.children.indexOf(this);if(i>=0)this.parentNode.children.splice(i,1);} };
+El.prototype.cloneNode=function(){ var e=new El(this.tagName); e._cls=this._cls.slice(); return e; };
+El.prototype.getBoundingClientRect=function(){ return {width:520,height:300,left:0,top:0}; };
+El.prototype.addEventListener=function(t,f){ (this._ev=this._ev||{})[t]=(this._ev[t]||[]).concat(f); };
+El.prototype.setAttribute=function(k,v){ this.attrs[k]=v; };
+El.prototype.removeAttribute=function(k){ delete this.attrs[k]; if(k==='data-k') delete this.dataset.k; };
+El.prototype.getContext=function(){ return ctx2d(); };
+El.prototype.closest=function(sel){ var n=this; while(n){ if(matches(n,sel)) return n; n=n.parentNode; } return null; };
+El.prototype.querySelectorAll=function(sel){ return collect(this,sel); };
+El.prototype.querySelector=function(sel){ return collect(this,sel)[0]||null; };
+function matches(n,sel){
+  return sel.split(',').some(function(s){
+    s=s.trim();
+    if(/\s/.test(s)){ var pp=s.split(/\s+/); s=pp[pp.length-1]; }
+    if(s.charAt(0)==='.') return n.classList.contains(s.slice(1));
+    if(s.charAt(0)==='#') return n.attrs.id===s.slice(1);
+    if(s.charAt(0)==='['){ var mm=/^\[([\w-]+)(?:="([^"]*)")?\]$/.exec(s); if(!mm) return false;
+      var key=mm[1].replace(/^data-/,'').replace(/-(\w)/g,function(_,c){return c.toUpperCase();});
+      if(mm[2]===undefined) return n.dataset[key]!==undefined;
+      return n.dataset[key]===mm[2]; }
+    return false;
+  });
+}
+function collect(root,sel){ var out=[]; (function walk(n){ n.children.forEach(function(c){ if(matches(c,sel)) out.push(c); walk(c); }); })(root); return out; }
+function ctx2d(){ var o={}; ['save','restore','beginPath','moveTo','lineTo','closePath','fill','stroke','clearRect','fillRect','setTransform','scale','translate','rotate','fillText','arc','quadraticCurveTo','bezierCurveTo','ellipse','clip','rect'].forEach(function(k){o[k]=function(){};}); o.createLinearGradient=function(){return {addColorStop:function(){}};}; o.measureText=function(){return {width:8};}; return o; }
+var REG={};
+var document={ body:new El('body'), documentElement:new El('html'),
+  getElementById:function(id){ return REG[id]||null; },
+  querySelector:function(s){ return document.body.querySelector(s); },
+  querySelectorAll:function(s){ return document.body.querySelectorAll(s); },
+  createElement:function(t){ return new El(t); },
+  addEventListener:function(){}, elementFromPoint:function(){ return null; } };
+document.body.dataset={};
+var window={ devicePixelRatio:1, innerWidth:1280, innerHeight:800,
+  matchMedia:function(){ return {matches:false, addEventListener:function(){}, addListener:function(){}}; },
+  addEventListener:function(){}, requestAnimationFrame:function(){return 0;},
+  getComputedStyle:function(){ return {getPropertyValue:function(){return '';}}; } };
+var location={search:''}; var navigator={userAgent:'node'};
+function requestAnimationFrame(){ return 0; }
+function ResizeObserver(){ this.observe=function(){}; this.disconnect=function(){}; }
+function mk(id,cls,tag){ var e=new El(tag||'div'); e.attrs.id=id; if(cls) e.className=cls; REG[id]=e; document.body.appendChild(e); return e; }
+var wrap=new El('div'); wrap.className='dice-wrap'; document.body.appendChild(wrap);
+var cvEl=new El('canvas'); cvEl.attrs.id='diceCanvas'; REG['diceCanvas']=cvEl; wrap.appendChild(cvEl);
+['lv-d8','lv-d10','lv-d12','rollBtn','cards','ops','trayHint','goalBox','goalNum','btnNewGoal','btnHint',
+ 'stageNote','stageSub','step1','tip1','calc1','out1','step2','tip2','calc2','out2','msg',
+ 'btnComplete','btnReset','recTitle','recCount','recTip','answers'].forEach(function(id){ mk(id); });
+['s1a','s1op','s1b','s2a','s2op','s2b'].forEach(function(s){
+  var e=new El('div'); e.className='slot'; e.dataset.slot=s;
+  (s.charAt(1)==='1'?REG['step1']:REG['step2']).appendChild(e); });
+[1,2].forEach(function(n){ var b=new El('button'); b.className='stage-tab'; b.dataset.stage=String(n); document.body.appendChild(b); });
+var mt=new El('div'); mt.className='mtabs'; document.body.appendChild(mt);
+['dice','work'].forEach(function(t){ var b=new El('button'); b.dataset.tab=t; mt.appendChild(b); });
+'''
+bridge = ("window.__pharaohSelfTest=selfTest; global.__ST=selfTest; global.__API={S:S,useToken:useToken,"
+          "completeExpr:completeExpr,resetExpr:resetExpr,calcStep1:calcStep1,renderRecords:renderRecords,"
+          "setStage:setStage,deleteAnswer:deleteAnswer,doc:document};")
+js2 = js.replace('window.__pharaohSelfTest=selfTest;', bridge)
+scenario = '''
+var out=global.__ST();
+var pass=out.filter(function(o){return o.pass;}).length;
+console.log('=== 내장 자체점검: '+pass+' / '+out.length+' 통과 ===');
+out.forEach(function(o){ if(!o.pass) console.log('FAIL:',o.name,o.info); });
+var API=global.__API, S=API.S;
+function ok(n,c,i){ console.log((c?'PASS':'FAIL')+' | '+n+(i!==undefined?' | '+i:'')); }
+S.cards=[{id:0,value:6,key:'d8',name:'정8면체',used:null},{id:1,value:2,key:'d10',name:'10면체',used:null},{id:2,value:3,key:'d12',name:'정12면체',used:null}];
+S.rolled=true; S.stage=1; S.answers=[]; S.cleared=[]; S.target=null; API.resetExpr(true);
+[[0,'+',1],[0,'-',1],[0,'*',1],[0,'/',1],[0,'+',2],[2,'*',1],[1,'+',2],[0,'-',2]].forEach(function(c){
+  API.useToken({kind:'num',cardId:c[0]}); API.useToken({kind:'op',op:c[1]}); API.useToken({kind:'num',cardId:c[2]}); API.completeExpr();
+});
+ok('연속 8회 계산 완료 → 답 누적', S.answers.length===8, S.answers.map(function(a){return a.v;}).join(','));
+ok('답 카드 DOM 8개 렌더', API.doc.querySelectorAll('#answers .ans').length===8);
+API.useToken({kind:'num',cardId:0}); API.useToken({kind:'op',op:'*'}); API.useToken({kind:'num',cardId:1});
+API.calcStep1(); API.useToken({kind:'op',op:'+'}); API.useToken({kind:'num',cardId:2}); API.completeExpr();
+ok('3개 사용 답 추가(6×2=12 → 12+3=15)', S.answers.length===9&&S.answers[8].v===15&&S.answers[8].uses===3, S.answers[8].txt);
+API.setStage(2); ok('목표 모드 전환 후 답 유지', S.answers.length===9);
+API.setStage(1); ok('자유 모드 복귀 후 답 유지', S.answers.length===9);
+API.deleteAnswer(0); ok('개별 답 삭제 후 나머지 유지', S.answers.length===8);
+S.answers=[]; API.renderRecords(); ok('빈 상태 안내 표시', API.doc.querySelectorAll('#answers .ans-empty').length===1);
+'''
+open('/tmp/run.js','w',encoding='utf-8').write(harness+js2+scenario)
+r=subprocess.run(['node','/tmp/run.js'],capture_output=True,text=True)
+lines_out=[l for l in r.stdout.split('\n') if ('===' in l or l.startswith('PASS')or l.startswith('FAIL'))]
+print('\n'.join(lines_out))
+print('STDERR', r.stderr[-800:])
